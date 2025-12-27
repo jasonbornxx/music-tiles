@@ -1,0 +1,348 @@
+--- START OF FILE index.html ---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Music Tiles Infinite</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+        body {
+            background-color: #111;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 450px;
+            height: 100vh;
+            margin: 0 auto;
+            background: #0f0c29;
+            background: linear-gradient(to bottom, #0f0c29, #302b63, #24243e);
+            display: flex;
+            border-left: 2px solid #333;
+            border-right: 2px solid #333;
+            overflow: hidden;
+        }
+
+        .lane {
+            flex: 1;
+            height: 100%;
+            border-right: 1px solid rgba(255,255,255,0.05);
+            pointer-events: none;
+        }
+        .lane:last-child { border-right: none; }
+
+        .tile {
+            position: absolute;
+            width: 25%;
+            height: 160px;
+            background: linear-gradient(to bottom, #00d2ff, #3a7bd5);
+            box-shadow: inset 0 0 20px rgba(255,255,255,0.3), 0 0 15px rgba(0,210,255,0.2);
+            border-radius: 4px;
+            z-index: 10;
+        }
+        
+        .tile.clicked {
+            opacity: 0;
+            transform: scale(0.9);
+            transition: opacity 0.1s, transform 0.1s;
+        }
+
+        .tile.wrong { background: #ff4444 !important; }
+
+        #score {
+            position: absolute;
+            top: 50px;
+            width: 100%;
+            text-align: center;
+            font-size: 60px;
+            color: #fff;
+            text-shadow: 0 0 15px #00d2ff;
+            z-index: 20;
+            pointer-events: none;
+        }
+
+        .screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.92);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+
+        button {
+            padding: 15px 40px;
+            font-size: 24px;
+            background: #00d2ff;
+            border: none;
+            border-radius: 30px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: opacity 0.3s;
+        }
+        button:disabled { background: #555; cursor: default; }
+
+        .file-box {
+            border: 2px dashed #444;
+            padding: 20px;
+            margin: 10px;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div class="lane"></div><div class="lane"></div><div class="lane"></div><div class="lane"></div>
+        <div id="score">0</div>
+
+        <div id="start-screen" class="screen">
+            <h1 style="color:#00d2ff; font-size: 40px; margin-bottom: 10px;">Music Tiles</h1>
+            <p>Upload a song for custom levels</p>
+            
+            <div class="file-box" onclick="document.getElementById('file-input').click(); event.stopPropagation();">
+                <span id="file-name">Tap to Load MP3/WAV</span>
+                <input type="file" id="file-input" accept="audio/*" class="hidden">
+            </div>
+
+            <button id="play-btn" onclick="requestStart(event)">PLAY</button>
+        </div>
+
+        <div id="game-over-screen" class="screen hidden">
+            <h1 style="color:#ff4444; font-size: 40px;">Failed!</h1>
+            <p style="font-size: 20px; margin-top: 10px;">Score: <span id="final-score">0</span></p>
+            <button onclick="location.reload()">RETRY</button>
+        </div>
+    </div>
+
+    <script>
+        let audioCtx;
+        let audioBuffer;
+        let sourceNode;
+        let isGameOver = false;
+        let gameActive = false; 
+        let score = 0;
+        let speed = 6.5; 
+        let tiles = [];
+        let tileTimestamps = [];
+        let nextTileIndex = 0;
+        let startTime = 0;
+        let animationId;
+
+        const container = document.getElementById('game-container');
+        const fileInput = document.getElementById('file-input');
+        const playBtn = document.getElementById('play-btn');
+        
+        const DEFAULT_TIMESTAMPS = [
+            0, 0.6, 1.2, 1.8, 2.4, 3.0, 3.6, 4.8, 5.4, 6.0, 6.6, 7.2, 7.8, 8.4,
+            9.6, 10.2, 10.8, 11.4, 12.0, 12.6, 13.2, 14.4, 15.0, 15.6, 16.2, 16.8, 17.4, 18.0
+        ];
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            document.getElementById('file-name').innerText = "Loading: " + file.name;
+            playBtn.disabled = true;
+            playBtn.innerText = "Analyzing...";
+            
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                analyzeAudio(audioBuffer);
+                playBtn.disabled = false;
+                playBtn.innerText = "PLAY";
+                document.getElementById('file-name').innerText = "Ready: " + file.name;
+            } catch (err) {
+                alert("Error loading audio file.");
+                playBtn.innerText = "PLAY";
+                playBtn.disabled = false;
+            }
+        });
+
+        function analyzeAudio(buffer) {
+            const data = buffer.getChannelData(0);
+            const step = Math.floor(buffer.sampleRate / 15); // Higher resolution
+            tileTimestamps = [];
+            
+            // To prevent overlap: 160px height / (6.5 speed * 60fps) = ~0.41s
+            const minGap = 0.45; 
+
+            for (let i = 0; i < data.length; i += step) {
+                let max = 0;
+                for (let j = 0; j < step && i + j < data.length; j++) {
+                    if (Math.abs(data[i+j]) > max) max = Math.abs(data[i+j]);
+                }
+                
+                if (max > 0.25) { // Sensitivity threshold
+                    const time = i / buffer.sampleRate;
+                    if (tileTimestamps.length === 0 || time - tileTimestamps[tileTimestamps.length-1] > minGap) {
+                        tileTimestamps.push(time);
+                    }
+                }
+            }
+        }
+
+        function requestStart(e) {
+            if(e) e.stopPropagation();
+
+            // Handle Fullscreen
+            const de = document.documentElement;
+            if (de.requestFullscreen) de.requestFullscreen();
+            else if (de.mozRequestFullScreen) de.mozRequestFullScreen();
+            else if (de.webkitRequestFullscreen) de.webkitRequestFullscreen();
+
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            if (!audioBuffer) tileTimestamps = DEFAULT_TIMESTAMPS;
+            
+            startGame();
+        }
+
+        function startGame() {
+            document.getElementById('start-screen').classList.add('hidden');
+            score = 0;
+            speed = 6.5;
+            nextTileIndex = 0;
+            isGameOver = false;
+            gameActive = true; 
+            tiles = [];
+            
+            document.getElementById('score').innerText = "0";
+
+            // Lead-in time so tiles can fall from top
+            startTime = audioCtx.currentTime + 2.5;
+
+            // Audio Playback Fix
+            if (audioBuffer) {
+                sourceNode = audioCtx.createBufferSource();
+                sourceNode.buffer = audioBuffer;
+                sourceNode.connect(audioCtx.destination);
+                sourceNode.start(startTime);
+            }
+
+            gameLoop();
+        }
+
+        function spawnTile(timestamp) {
+            const lane = Math.floor(Math.random() * 4);
+            const tileEl = document.createElement('div');
+            tileEl.className = 'tile';
+            tileEl.style.left = (lane * 25) + '%';
+            tileEl.style.top = '-170px';
+
+            const handleTap = (e) => {
+                e.preventDefault();
+                e.stopPropagation(); 
+                
+                if (isGameOver || tileEl.classList.contains('clicked')) return;
+
+                tileEl.classList.add('clicked');
+                score++;
+                document.getElementById('score').innerText = score;
+                speed += 0.03; 
+                
+                if (!audioBuffer) playSynthNote();
+            };
+
+            tileEl.addEventListener('touchstart', handleTap, {passive: false});
+            tileEl.addEventListener('mousedown', handleTap);
+
+            container.appendChild(tileEl);
+            tiles.push({ el: tileEl, y: -170, active: true, time: timestamp });
+        }
+
+        function triggerGameOver() {
+            if (!gameActive || isGameOver) return;
+            isGameOver = true;
+            gameActive = false;
+            cancelAnimationFrame(animationId);
+            
+            if (sourceNode) {
+                try { sourceNode.stop(); } catch(e) {}
+            }
+            
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('game-over-screen').classList.remove('hidden');
+        }
+
+        const handleMiss = (e) => {
+            if (!gameActive || isGameOver) return;
+            if(!e.target.classList.contains('tile') || e.target.classList.contains('clicked')) {
+               triggerGameOver(); 
+            }
+        };
+
+        container.addEventListener('mousedown', handleMiss);
+        container.addEventListener('touchstart', handleMiss, {passive: false});
+
+        function gameLoop() {
+            if (isGameOver) return;
+
+            const songTime = audioCtx.currentTime - startTime;
+            const travelTimeSeconds = window.innerHeight / (speed * 60); 
+
+            if (nextTileIndex < tileTimestamps.length) {
+                if (songTime >= tileTimestamps[nextTileIndex] - travelTimeSeconds) {
+                    spawnTile(tileTimestamps[nextTileIndex]);
+                    nextTileIndex++;
+                }
+            }
+
+            for (let i = 0; i < tiles.length; i++) {
+                let t = tiles[i];
+                t.y += speed;
+                t.el.style.top = t.y + 'px';
+
+                if (t.active && t.y > window.innerHeight - 20) {
+                    t.el.classList.add('wrong');
+                    triggerGameOver();
+                    return;
+                }
+
+                if (t.y > window.innerHeight) {
+                    t.el.remove();
+                    tiles.splice(i, 1);
+                    i--;
+                }
+
+                if (t.el.classList.contains('clicked')) t.active = false;
+            }
+
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        function playSynthNote() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(261.63 + (Math.random() * 200), audioCtx.currentTime);
+            g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+            osc.connect(g);
+            g.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.4);
+        }
+    </script>
+</body>
+</html>
